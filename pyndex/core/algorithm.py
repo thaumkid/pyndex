@@ -66,8 +66,8 @@ def _match_rank_w_rebalance(cal, year):
 
 
 def _validate_year(wrds, year):
-    last_date = wrds.raw_sql('''SELECT date FROM crsp_a_stock.dsf 
-    ORDER BY date DESC LIMIT 1''')["date"].get(0)
+    last_date = dt.date.fromisoformat(wrds.raw_sql('''SELECT date FROM crsp_a_stock.dsf 
+    ORDER BY date DESC LIMIT 1''')["date"].get(0))
     valid_year = (year >= 1989) & (
         _get_quarter_rank(_get_rebalance(year, 1)) <= last_date)
     return valid_year
