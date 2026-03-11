@@ -1,9 +1,10 @@
 from pandas.tseries.offsets import BDay
 import pdb
 import pandas as pd
-import datetime as dt
 import calendar
+import numpy as np # jahobbs addition
 import pyndex.util._decorator as dec
+import os # jahobbs addition
 import sys
 sys.path.append("../util")
 
@@ -12,7 +13,7 @@ sys.path.append("../util")
 
 @dec.validatebday(rank_day=True)
 def _get_annual_rank(year):
-    return dt.date(year, 5, 31)
+    return pd.Timestamp(year,5,31)
 
 
 @dec.validatebday(rank_day=False)
@@ -24,19 +25,18 @@ def _get_rebalance(year, quarter):
         fridays = [week[calendar.FRIDAY]
                    for week in calendar.monthcalendar(year, month[quarter])]
         if fridays[0] == 0:
-            return dt.date(year, month[quarter], fridays[3])
+            return pd.Timestamp(year, month[quarter], fridays[3])
 
         else:
-            return dt.date(year, month[quarter], fridays[2])
+            return pd.Timestamp(year, month[quarter], fridays[2])
     else:
-        return dt.date(year, month[quarter], max([week[calendar.FRIDAY]
-                                                  for week in calendar.monthcalendar(year, month[quarter])]))
+        return pd.Timestamp(year, month[quarter], max([week[calendar.FRIDAY] for week in calendar.monthcalendar(year, month[quarter])]))
 
 
 @dec.validatebday(rank_day=True)
 def _get_quarter_rank(quarter_rebalance):
     preceeding_weeks = 5
-    return (quarter_rebalance - dt.timedelta(days=preceeding_weeks*7))
+    return (quarter_rebalance - pd.Timedelta(days=preceeding_weeks*7))
 
 
 def _get_calendar(year):
@@ -66,35 +66,47 @@ def _match_rank_w_rebalance(cal, year):
 
 
 def _validate_year(wrds, year):
-    last_date = dt.date.fromisoformat(wrds.raw_sql('''SELECT date FROM crsp_a_stock.dsf 
+    last_date = pd.to_datetime(wrds.raw_sql('''SELECT date FROM crsp_a_stock.dsf 
     ORDER BY date DESC LIMIT 1''')["date"].get(0))
     valid_year = (year >= 1989) & (
         _get_quarter_rank(_get_rebalance(year, 1)) <= last_date)
     return valid_year
 
 
-def _download(wrds, year):
-    if not _validate_year(wrds, year):
+def _download(wrds, year, cachedir):
+    if wrds: # allow for cache and no wrds connection
+      if not _validate_year(wrds, year):
         raise ValueError(f"Argument year with value {year} not supported")
 
-    stock_query = """
-    SELECT date, permco, permno, cusip, prc, shrout, cfacpr FROM crsp_a_stock.dsf
-    WHERE date BETWEEN '{rank_y}'
-    AND '{rank_y_plus_1}'
-    ORDER BY date
-    """.format(rank_y=_get_annual_rank(year),
-               rank_y_plus_1=_get_annual_rank(year+1))
+    
+    stock_table_name = f"{cachedir}/{year}_stock_table.csv"
+    if not os.path.exists(stock_table_name):
+        stock_query = """
+        SELECT date, permco, permno, cusip, prc, shrout, cfacpr FROM crsp_a_stock.dsf
+        WHERE date BETWEEN '{rank_y}'
+        AND '{rank_y_plus_1}'
+        ORDER BY date
+        """.format(rank_y=_get_annual_rank(year),
+                   rank_y_plus_1=_get_annual_rank(year+1))
 
-    stock_table = wrds.raw_sql(stock_query)
+        stock_table = wrds.raw_sql(stock_query)
+        stock_table.to_csv(stock_table_name)
+    else:
+        stock_table = pd.read_csv(stock_table_name,parse_dates=[1])
 
-    metadata_query = """
-    SELECT begdat, permno, hshrcd FROM crsp_a_stock.dsfhdr
-    WHERE begdat <= '{rank_y_plus_1}'
-    ORDER BY begdat
-    """.format(rank_y=_get_annual_rank(year),
-               rank_y_plus_1=_get_annual_rank(year+1))
+    metadata_table_name = f"{cachedir}/{year}_metadata_table.csv"
+    if not os.path.exists(metadata_table_name):
+        metadata_query = """
+        SELECT begdat, permno, hshrcd FROM crsp_a_stock.dsfhdr
+        WHERE begdat <= '{rank_y_plus_1}'
+        ORDER BY begdat
+        """.format(rank_y=_get_annual_rank(year),
+                   rank_y_plus_1=_get_annual_rank(year+1))
 
-    metadata_table = wrds.raw_sql(metadata_query)
+        metadata_table = wrds.raw_sql(metadata_query)
+        metadata_table.to_csv(metadata_table_name)
+    else:
+        metadata_table = pd.read_csv(metadata_table_name,parse_dates=[1])
 
     return metadata_table, stock_table
 
@@ -140,7 +152,7 @@ def _get_mkt_cap_by_permco(stock):
 def _append_weights(stock):
     mkt_cap_by_permco = _get_mkt_cap_by_permco(stock)
     total_mkt_cap = mkt_cap_by_permco.mkt_cap.sum()
-    mkt_cap_by_permco["weights"] = (mkt_cap_by_permco.mkt_cap/total_mkt_cap)
+    mkt_cap_by_permco.loc[:,"weights"] = (mkt_cap_by_permco.mkt_cap/total_mkt_cap)
     return stock.merge(mkt_cap_by_permco.drop("mkt_cap", axis=1),
                        on="permco", how="left")
 
@@ -189,8 +201,7 @@ def _filter_by_companies_in_index(filtered_ipos, index_stocks):
 
 
 def _build_annual_weights(calendar, stock, index, metadata):
-    filtered_stocks = _filter_by_minimum_requirements(
-        stock[stock.date == calendar["Annual Rank Day"]])
+    filtered_stocks = _filter_by_minimum_requirements(stock[stock.date == calendar["Annual Rank Day"]])
     filtered_stocks = _filter_by_shrcd(filtered_stocks, metadata)
     filtered_stocks = _filter_by_ranking(filtered_stocks, index)
     return _append_weights(filtered_stocks)
@@ -202,12 +213,9 @@ def _build_quarterly_weights(index_stocks, metadata, stock,
     filtered_ipos = _preprocessing_IPOs(metadata, stock, calendar,
                                         init=init, end=end)
     filtered_ipos = _filter_by_shrcd(filtered_ipos, metadata)
-    filtered_ipos = _filter_by_capitalization(filtered_ipos,
-                                              index_stocks, index)
-    filtered_ipos = _filter_by_companies_in_index(filtered_ipos,
-                                                  index_stocks)
-    new_index_permnos = filtered_ipos.permno.append(index_stocks.permno,
-                                                    ignore_index=True)
+    filtered_ipos = _filter_by_capitalization(filtered_ipos, index_stocks, index)
+    filtered_ipos = _filter_by_companies_in_index(filtered_ipos, index_stocks)
+    new_index_permnos = pd.concat((filtered_ipos.permno,index_stocks.permno), ignore_index=True)
     new_index_composition = stock[(stock.date == end) &
                                   (stock.permno.isin(new_index_permnos))]
 
@@ -219,27 +227,22 @@ def _build_quarterly_weights(index_stocks, metadata, stock,
 def _beautify_table(table, calendar, year):
     table.date = table.date.replace(
         to_replace=_match_rank_w_rebalance(calendar, year))
-    weights_table = pd.pivot_table(table,  values='weights', index=['date'],
-                                   columns=['permno', 'cusip', 'permco'])
+    weights_table = pd.pivot_table(table,  values='weights', index=['date'], columns=['permno', 'cusip', 'permco'])
     return weights_table
 
 
 def _reindex_with_bday(weights_table, trading_days, calendar, year):
     last_bday = _get_calendar(year+1)["Annual Rebalance Day"] - BDay(1)
     trading_days = pd.to_datetime(trading_days)
-    index_from_rebalance = trading_days[trading_days.date >=
-                                        calendar["Annual Rebalance Day"]]
-    new_index = index_from_rebalance.append(
-        pd.bdate_range(trading_days[-1] + BDay(1), last_bday))
-    return weights_table.reindex(new_index).fillna(method="ffill").fillna(0)
+    index_from_rebalance = trading_days[trading_days >= calendar["Annual Rebalance Day"]]
+    new_index = np.concatenate((index_from_rebalance,pd.bdate_range(trading_days[-1] + BDay(1), last_bday)),axis=None)
+    return weights_table.reindex(new_index).ffill().fillna(0)
 
 
 def _build(stock, year, index, metadata):
-
     calendar = _get_calendar(year)
     stock = stock.assign(mkt_cap=stock.prc.abs()*stock.shrout*1000)
-    index_stocks = _build_annual_weights(calendar,
-                                         stock, index, metadata)
+    index_stocks = _build_annual_weights(calendar,stock, index, metadata)
     if year > 2003:
         for quarter in [3, 4, 1]:
             index_stocks = _build_quarterly_weights(
