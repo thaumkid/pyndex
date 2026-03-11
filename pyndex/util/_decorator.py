@@ -43,7 +43,6 @@ def validatebday(rank_day=True):
                     result_day -= BDay(1)
                 else:
                     result_day += BDay(1)
-                result_day = result_day.date()
             return result_day
 
         return wrapper
