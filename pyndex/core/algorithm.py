@@ -2,9 +2,9 @@ from pandas.tseries.offsets import BDay
 import pdb
 import pandas as pd
 import calendar
-import numpy as np # jahobbs addition
+import numpy as np
 import pyndex.util._decorator as dec
-import os # jahobbs addition
+import os
 import sys
 sys.path.append("../util")
 
