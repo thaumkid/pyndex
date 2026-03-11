@@ -10,13 +10,13 @@ class Index:
     @dec.typeassert(wrds=wrds.sql.Connection,
                     year=int, index=str)
     @dec.supported(index=["1000", "2000", "3000"])
-    def from_wrds(wrds, year, index, verbose=False):
+    def from_wrds(wrds, year, index, cachedir, verbose=False):
         """Generate Russell Indexes from WRDS database.
 
         Args:
             wrds (wrds.sql.Connection): Connection to the WRDS database.
             year (int): Year of the Index to be reconstructed.
-            index (str): Index to reconstructed. Supported Russell 1000, 2000 and 3000.
+            index (str): Index to be reconstructed. Supported Russell 1000, 2000 and 3000.
             verbose (bool, optional): Verbose output. Defaults to False.
 
         Returns:
@@ -30,13 +30,13 @@ class Index:
         """
         if verbose:
             print("Downloading Data ...")
-        metadata, stock = alg._download(wrds, year)
+        metadata, stock = alg._download(wrds, year, cachedir)
         if verbose:
             print(f"Building Russell {index} year {year} ...")
         weights_table = alg._build(stock, year, index,
                                    metadata)
 
-        return weights_table
+        return weights_table,stock
 
     @staticmethod
     @dec.typeassert(year=int)
